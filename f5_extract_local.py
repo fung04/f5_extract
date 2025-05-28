@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright 2022 F5 Networks, Inc.
 # Modified work Copyright 2024 [fung04]
 #
@@ -24,9 +25,11 @@ import os
 import re
 import json
 import csv
+import traceback
 from typing import List, Dict, Any
 from collections import defaultdict
 
+# Script will sort by first column, thus the first column should not be a list
 VS_LB_CONFIG = {
     "vs_name": 'N/A',
     'vs_type': 'N/A',
@@ -90,7 +93,14 @@ F5_DEVICE_CONFIG = {
     "tacacs": ['N/A'],
 }
 
-FILE_EXTENSION = ".ucs"
+F5_ROUTE_CONFIG = {
+    "network": "N/A",
+    "gateway": ['N/A'],
+    "description": "N/A",
+
+}
+
+FILE_EXTENSION = [".ucs", ".qkview"]
 CONFIG_OUTPUT_FOLDER = "config"
 JSON_OUTPUT_FOLDER = "output"
 UNSET = "unset"
@@ -276,8 +286,9 @@ class BigIPConfigParser():
         try:
             data = {}
             for key, value in files.items():
+                # print(f"Parsing {key}")
                  # Do not parse certs, keys or license
-                if any(x in key for x in ('Common_d', 'bigip_script.conf', '.license')):
+                if any(x in key for x in ('Common_d', 'bigip_script.conf', '.license', 'profile_base.conf', 'statsd.conf', 'daemon.conf')):
                     continue
                 
                 file_arr = value.replace('\r\n', '\n').split('\n')
@@ -348,10 +359,10 @@ class BigIPConfigParser():
         
 class BigIPConfigExtractor():
     def __init__(self):
-        files = [file for file in os.listdir() if os.path.splitext(file)[1] == FILE_EXTENSION]
+        files = [file for file in os.listdir() if os.path.splitext(file)[1] in FILE_EXTENSION]
         
         for file in files:
-            file_name = file.replace(f'{FILE_EXTENSION}', '')
+            file_name = os.path.splitext(file)[0]
             try:
                 print(f"Extracting [{file}]")
                 with tarfile.open(file, 'r:gz') as tar:
@@ -361,9 +372,11 @@ class BigIPConfigExtractor():
                             # Remove the 'config/' prefix from the member name
                             member.name = member.name[len('config/'):]
                             if member.name.endswith('.conf'):
-                                tar.extract(member, path=f"{CONFIG_OUTPUT_FOLDER}/{file_name}", set_attrs=False)
+                                if not member.issym() and not member.islnk():
+                                    tar.extract(member, path=f"{CONFIG_OUTPUT_FOLDER}/{file_name}", set_attrs=False, filter="data")
             except Exception as e:
                 print(f"Error processing {file}:\n{e}")
+    
 
 class BigIPConfigExporter:
     def __init__(self, filename):
@@ -371,6 +384,7 @@ class BigIPConfigExporter:
         self.f5_self_ip_list = []
         self.f5_device_info_list = []
         self.f5_snat_info_list = []
+        self.f5_route_info_list = []
         self.filename = filename
 
         with open(f"{JSON_OUTPUT_FOLDER}/{filename}.json", "r") as f:
@@ -402,6 +416,7 @@ class BigIPConfigExporter:
         self.snat_list = {key: value for key, value in self.response.items() if key.startswith('ltm snat ')}
         self.snat_pool_list = {key: value for key, value in self.response.items() if key.startswith('ltm snatpool')}
         self.vcmp_guest_list = {key: value for key, value in self.response.items() if key.startswith('vcmp guest ')}
+        self.routes_list = {key: value for key, value in self.response.items() if key.startswith('net route ') or key.startswith('sys management-route')}
 
         self.device_list = {key: value for key, value in self.response.items() if key.startswith('cm device ')}
         self.sys_config_list = {key: value for key, value in self.response.items() if key.startswith('sys') or key.startswith('auth')}
@@ -419,6 +434,9 @@ class BigIPConfigExporter:
 
         snat_processor = SNATProcessor(self.snat_list, self.snat_pool_list)
         self.f5_snat_info_list = snat_processor.process_snats()
+        
+        route_processor = RouteProcessor(self.routes_list, self.ltm_pool_list)
+        self.f5_route_info_list = route_processor.process_routes()
 
         print(f"Total Virtual Servers: {len(self.vs_config_list)}")
         
@@ -441,6 +459,7 @@ class BigIPConfigExporter:
             (f'{self.filename}_self_ip.csv', self.f5_self_ip_list, F5_IP_CONFIG.keys()),
             (f'{self.filename}_device_info.csv', self.f5_device_info_list, F5_DEVICE_CONFIG.keys()),
             (f'{self.filename}_snat.csv', self.f5_snat_info_list, F5_SNAT_CONFIG.keys()),
+            (f'{self.filename}_route.csv', self.f5_route_info_list, F5_ROUTE_CONFIG.keys()),
         ]
 
         for filename, data_list, headers in configs_to_export:
@@ -485,13 +504,23 @@ class VirtualServerProcessor:
         # Extract basic VS configuration details
         # Similar to the current implementation in extract_config method
         self.vs_config['vs_name'] = key.split('/')[-1]
-        self.vs_config['vs_ip_src'] = data.get('source', 'N/A').split("/")[0]
-        self.vs_config['vs_ip_src_cidr'] = data.get('source', 'N/A').split('/')[-1]
-        self.vs_config['vs_ip_dest'] = data.get('destination', 'N/A').split("/")[-1].split(":")[0]
-        self.vs_config['vs_ip_dest_port'] = data.get('destination', 'N/A').split(':')[-1]
+        
+        source = data.get('source', 'N/A')
+        if source != 'N/A':
+            self.vs_config['vs_ip_src'] = source.split("/")[0]
+            self.vs_config['vs_ip_src_cidr'] = source.split('/')[-1]
+        
+        destination = data.get('destination', 'N/A')
+        if destination != 'N/A':
+            self.vs_config['vs_ip_dest'] = destination.split("/")[-1].split(":")[0]
+            self.vs_config['vs_ip_dest_port'] = destination.split(':')[-1]  
+        
         self.vs_config['vs_ip_dest_mask']  = data.get('mask', 'N/A')
         self.vs_config['vs_ip_protocol'] = data.get('ip-protocol', 'N/A')
-        self.vs_config['vs_description'] = data.get('description', 'N/A').replace('"', '/')
+        
+        description = data.get('description', 'N/A')
+        if description != 'N/A':
+            self.vs_config['vs_description'] = description.replace('"', '/')
 
         return self.vs_config   
 
@@ -615,8 +644,6 @@ class VirtualServerProcessor:
 
                 if 'ASM_' in profile_name:
                     self.vs_config['vs_asm_policies'].append(profile_name.replace('ASM_', ''))
-                else:
-                    self.vs_config['vs_asm_policies'] = [UNSET]
 
                 if profile_context == 'clientside':
                     self.vs_config['vs_ssl_offload'].append(f"{profile_name} (clientside)")
@@ -624,7 +651,13 @@ class VirtualServerProcessor:
                     self.vs_config['vs_ssl_offload'].append(f"{profile_name} (serverside)")
                 else:
                     self.vs_config['vs_profiles'].append(profile_name)
-                    self.vs_config['vs_ssl_offload'] = [UNSET]
+
+            # Ensure that vs_ssl_offload and vs_asm_policies are always lists after loop
+            if not self.vs_config['vs_ssl_offload']:
+                self.vs_config['vs_ssl_offload'] = [UNSET]
+            if not self.vs_config['vs_asm_policies']:
+                self.vs_config['vs_asm_policies'] = [UNSET]
+
     
     def extract_vs_policies(self, data):
         vs_policies = data.get('policies', {})
@@ -640,13 +673,13 @@ class VirtualServerProcessor:
         vs_vlans = data.get('vlans', {})
 
         if vs_vlans:
-            self.vs_config['vlan'] = []
+            self.vs_config['vs_vlans'] = []
             self.vs_config['vs_vlans_status'] = []
             for vlan_key, vlan_value in vs_vlans.items():
                 vlan = vlan_key.split('/')[-1]
 
                 vlan_status = "enable" if "vlans-enabled" in data.keys() else "disable"
-                self.vs_config['vlan'].append(vlan)
+                self.vs_config['vs_vlans'].append(vlan)
                 self.vs_config['vs_vlans_status'].append(vlan_status)
  
     def extract_vs_snat(self, data):
@@ -880,8 +913,7 @@ class SNATProcessor:
             self.f5_snat_info['translation_ip'] = data.get('translation', UNSET).split('/')[-1]
         elif data.get("snatpool"):
             self.extract_f5_snat_pool(data, self.snat_pool_list)
-        
-    
+
     def extract_f5_snat_origin(self, data):
         snat_origin = data.get('origins', {})
 
@@ -925,22 +957,115 @@ class SNATProcessor:
             # Where indicate all vlan
             self.f5_snat_info['vlan'] = UNSET
 
-if __name__ == "__main__":
+class RouteProcessor:
+    def __init__(self, route_list, ltm_pool_list):
+        self.ltm_pool_list = ltm_pool_list
+        self.route_list = route_list
+        self.f5_route_info_list = []
+    
+    def process_routes(self):
+        for key, data in self.route_list.items():
+            self.f5_route_info = F5_ROUTE_CONFIG.copy()
+            if key.startswith("sys management-route"):
+                self.f5_route_info['gateway'] = data.get('gateway', UNSET)
+                self.f5_route_info['network'] = f"management-route {data.get('network', UNSET)}"
+                self.f5_route_info['description'] = data.get('description', UNSET)
+            
+            elif key.startswith("net route"):
+                if data.get('gw'):
+                    self.f5_route_info['gateway'] = data.get('gw', UNSET)
+                elif data.get('pool'):
+                    self.extract_vs_pool(data, self.ltm_pool_list) # Passing Virtual Server and Pools list
+                    print(f"Gateway: {self.f5_route_info['gateway']}")
+                else:
+                    self.f5_route_info['gateway'] = UNSET
+                
+                self.f5_route_info['network'] = data.get('network', UNSET)
+                self.f5_route_info['description'] = data.get('description', UNSET)
+
+            self.f5_route_info_list.append(self.f5_route_info)
+        return self.f5_route_info_list
+    
+    def extract_vs_pool(self, data, ltm_pool_list):
+        # Get Pool name from Virtual Server data, then serach in Pools list
+        vs_pool = f"ltm pool {data.get('pool', '')}"
+        pool_data = ltm_pool_list.get(vs_pool, {})
+      
+        if pool_data:
+            self.f5_route_info['gateway'] = []
+
+            members = pool_data.get('members', {})
+            for member_key, member_info in members.items():
+                address_port = re.search(r'(\:\S+)', member_key).group(0)
+                address = member_info.get('address')
+                session = member_info.get('session')
+                state = member_info.get('state')
+
+                if session and state:
+                    full_address = f"{address}{address_port}:{session}:{state}"
+                else:
+                    full_address = f"{address}{address_port}"
+
+                self.f5_route_info['gateway'].append(full_address)
+        else:
+            print(f"NOT FOUND: Pool For VS {self.vs_config['vs_name']}")
+            print(data.get('pool', ''))
+
+
+if __name__ == "__main__":    
     os.makedirs(CONFIG_OUTPUT_FOLDER, exist_ok=True)
     os.makedirs(JSON_OUTPUT_FOLDER, exist_ok=True)
-    BigIPConfigExtractor()
+    
+    if not os.listdir(CONFIG_OUTPUT_FOLDER): # 
+        print("No config files found in the output folder, extracting from tar files...")
+        BigIPConfigExtractor()
 
-    # read dirs in config folder, each dir contain multiple .conf files
-    config_files = {}
-    for dir in os.listdir(CONFIG_OUTPUT_FOLDER):
-        for config_file in os.listdir(f"{CONFIG_OUTPUT_FOLDER}/{dir}"):
-            with open(f"{CONFIG_OUTPUT_FOLDER}/{dir}/{config_file}", "r") as f:
-                config_files[config_file] = f.read()
-        
-        json_dump = BigIPConfigParser().parse_files(config_files)
-        print(f"\nParsed [{dir}] successfully")
+    for item_name in os.listdir(CONFIG_OUTPUT_FOLDER):
+        # Construct the full path to the item
+        item_path = os.path.join(CONFIG_OUTPUT_FOLDER, item_name)
 
-        with open(f"{JSON_OUTPUT_FOLDER}/{dir}.json", "w") as f:
-            json.dump(json_dump, f, indent=4)
-        
-        BigIPConfigExporter(dir)
+        # Check if the item is actually a directory
+        if os.path.isdir(item_path):
+            print(f"\nProcessing directory: [{item_name}]")
+            config_files = {}
+            # Iterate through files inside this directory
+            for config_filename in os.listdir(item_path):
+                config_file_path = os.path.join(item_path, config_filename)
+
+                # Optional but recommended: Ensure it's a file, not a nested directory
+                if os.path.isfile(config_file_path):
+                    try:
+                        with open(config_file_path, "r", encoding='utf-8') as f: # Added encoding
+                            config_files[config_filename] = f.read()
+                    except Exception as e:
+                        print(f"Error reading file {config_file_path}: {e}")
+                else:
+                    print(f"Skipping non-file item in directory {item_name}: {config_filename}")
+
+
+            # Only parse and write if we actually found config files
+            if config_files:
+                try:
+                    # Parse the collected config files for this directory
+                    parser = BigIPConfigParser() # Instantiate parser here if it holds no state across dirs
+                    json_dump = parser.parse_files(config_files)
+                    print(f"Parsed [{item_name}] successfully")
+
+                    # Write the JSON output for this directory
+                    output_json_path = os.path.join(JSON_OUTPUT_FOLDER, f"{item_name}.json")
+                    with open(output_json_path, "w", encoding='utf-8') as f: # Added encoding
+                        json.dump(json_dump, f, indent=4)
+                    print(f"Written JSON for [{item_name}] to {output_json_path}")
+
+                    # Perform export for this directory
+                    BigIPConfigExporter(item_name)
+
+                except Exception as e:
+                     print(f"Error processing directory {item_name}: {traceback.format_exc()}")
+
+            else:
+                print(f"No valid config files found in directory: [{item_name}]")
+
+        else:
+            # This item is not a directory (e.g., .DS_Store), skip it
+            print(f"Skipping non-directory item: [{item_name}]")
