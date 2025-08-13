@@ -377,7 +377,6 @@ class BigIPConfigExtractor():
             except Exception as e:
                 print(f"Error processing {file}:\n{e}")
     
-
 class BigIPConfigExporter:
     def __init__(self, filename):
         self.vs_config_list = []
@@ -658,7 +657,6 @@ class VirtualServerProcessor:
             if not self.vs_config['vs_asm_policies']:
                 self.vs_config['vs_asm_policies'] = [UNSET]
 
-    
     def extract_vs_policies(self, data):
         vs_policies = data.get('policies', {})
         if vs_policies:
@@ -937,7 +935,7 @@ class SNATProcessor:
             else:
                 self.f5_snat_info['translation_ip'] = UNSET
         else:
-            print(f"NOT FOUND: SNAT Pool For VS {self.vs_config['vs_name']}")
+            print(f"NOT FOUND: SNAT Pool For VS")
             print(data.get("snatpool", ""))
 
             
@@ -976,7 +974,7 @@ class RouteProcessor:
                     self.f5_route_info['gateway'] = data.get('gw', UNSET)
                 elif data.get('pool'):
                     self.extract_vs_pool(data, self.ltm_pool_list) # Passing Virtual Server and Pools list
-                    print(f"Gateway: {self.f5_route_info['gateway']}")
+                    # print(f"Gateway: {self.f5_route_info['gateway']}")
                 else:
                     self.f5_route_info['gateway'] = UNSET
                 
@@ -1008,7 +1006,7 @@ class RouteProcessor:
 
                 self.f5_route_info['gateway'].append(full_address)
         else:
-            print(f"NOT FOUND: Pool For VS {self.vs_config['vs_name']}")
+            print(f"NOT FOUND: Pool For VS")
             print(data.get('pool', ''))
 
 
@@ -1069,3 +1067,5 @@ if __name__ == "__main__":
         else:
             # This item is not a directory (e.g., .DS_Store), skip it
             print(f"Skipping non-directory item: [{item_name}]")
+    
+    input("Press Enter to exit...")
