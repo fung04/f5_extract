@@ -33,6 +33,7 @@ from collections import defaultdict
 VS_LB_CONFIG = {
     "vs_name": 'N/A',
     'vs_type': 'N/A',
+    'vs_status': 'N/A',
     "vs_description": 'N/A',
     'vs_ip_src': 'N/A', 
     'vs_ip_src_cidr': 'N/A',
