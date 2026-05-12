@@ -493,6 +493,7 @@ class BigIPConfigExporter:
             (f'{self.filename}_device_info.csv', self.f5_device_info_list, F5_DEVICE_CONFIG.keys()),
             (f'{self.filename}_snat.csv', self.f5_snat_info_list, F5_SNAT_CONFIG.keys()),
             (f'{self.filename}_route.csv', self.f5_route_info_list, F5_ROUTE_CONFIG.keys()),
+            (f'{self.filename}_gtm_wideip.csv', self.gtm_config_list, GTM_WIDEIP_CONFIG.keys()),
         ]
 
         for filename, data_list, headers in configs_to_export:
@@ -537,6 +538,7 @@ class VirtualServerProcessor:
         # Extract basic VS configuration details
         # Similar to the current implementation in extract_config method
         self.vs_config['vs_name'] = key.split('/')[-1]
+        self.vs_config['vs_status'] = "disabled" if "disabled" in data.keys() else "enabled"
         
         source = data.get('source', 'N/A')
         if source != 'N/A':
