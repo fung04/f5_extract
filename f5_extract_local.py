@@ -384,10 +384,11 @@ class BigIPConfigParser():
             raise Exception(error_message)
         
 class BigIPConfigExtractor():
-    def __init__(self):
-        files = [file for file in os.listdir() if os.path.splitext(file)[1] in FILE_EXTENSION]
-        
-        for file in files:
+    def __init__(self, files):
+        if not files:
+            return
+        self.files = files
+        for file in self.files:
             file_name = os.path.splitext(file)[0]
             try:
                 print(f"Extracting [{file}]")
@@ -1155,10 +1156,21 @@ class GTMServerProcessor:
 if __name__ == "__main__":    
     os.makedirs(CONFIG_OUTPUT_FOLDER, exist_ok=True)
     os.makedirs(JSON_OUTPUT_FOLDER, exist_ok=True)
+
+    root_config_files = [f for f in os.listdir('.') if any(f.endswith(ext) for ext in FILE_EXTENSION)]
     
     if not os.listdir(CONFIG_OUTPUT_FOLDER): # 
         print("No config files found in the output folder, extracting from tar files...")
-        BigIPConfigExtractor()
+        BigIPConfigExtractor(root_config_files)
+    else:
+        extracted_config_dirs = [f for f in os.listdir(CONFIG_OUTPUT_FOLDER) if not f.startswith('.')]
+        root_config_files = [f.replace(ext, '') for f in root_config_files for ext in FILE_EXTENSION if f.endswith(ext)]
+        diff_config_files = list(set(set(root_config_files) - set(extracted_config_dirs) ) | set( set(extracted_config_dirs) - set(root_config_files) ))
+        
+        if diff_config_files:
+            actual_diff_files = [f"{file}{ext}" for file in diff_config_files for ext in FILE_EXTENSION if os.path.isfile(f"{file}{ext}")]
+            if actual_diff_files:
+                BigIPConfigExtractor(actual_diff_files)
 
     for item_name in os.listdir(CONFIG_OUTPUT_FOLDER):
         # Construct the full path to the item
