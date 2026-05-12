@@ -638,6 +638,10 @@ class VirtualServerProcessor:
 
                 if session and state:
                     full_address = f"{address}{address_port}:{session}:{state}"
+                elif session:
+                    full_address = f"{address}{address_port}:{session}"
+                elif state:
+                    full_address = f"{address}{address_port}:{state}"
                 else:
                     full_address = f"{address}{address_port}"
 
