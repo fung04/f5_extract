@@ -97,8 +97,34 @@ F5_ROUTE_CONFIG = {
     "network": "N/A",
     "gateway": ['N/A'],
     "description": "N/A",
-
 }
+
+GTM_WIDEIP_CONFIG = {
+    'wideip_name': 'N/A',
+    'wideip_type': 'N/A',
+    'wideip_description': 'N/A',
+    'wideip_rules': ['N/A'],
+    'wideip_status': 'N/A',
+    'wideip_lb_mode': 'N/A',
+    'wideip_persistence': 'N/A', 
+    'wideip_ttl_persistence': 'N/A', 
+    'wideip_pool_member_name': ['N/A'],
+    'wideip_pool_member_order': ['N/A'],
+    'wideip_pool_member_ratio': ['N/A'],
+    'gtm_pool_status': ['N/A'],
+    'gtm_pool_member_vs_name': ['N/A'], # F5 LTM
+    'gtm_pool_member_order': ['N/A'],
+    'gtm_pool_member_ip_dest': 'N/A',
+    'gtm_pool_member_ip_dest_port': 'N/A',
+    'gtm_pool_lb_mode': 'N/A', 
+    'gtm_pool_alternate_mode': 'N/A', 
+    'gtm_pool_fallback_mode': 'N/A', 
+    'pool_member_datacenter': 'N/A',
+    'pool_member_server_name': 'N/A',
+    'pool_member_server_type': 'N/A',
+    'pool_member_server_monitor_mode': 'N/A',
+}
+
 
 FILE_EXTENSION = [".ucs", ".qkview"]
 CONFIG_OUTPUT_FOLDER = "config"
@@ -419,6 +445,10 @@ class BigIPConfigExporter:
 
         self.device_list = {key: value for key, value in self.response.items() if key.startswith('cm device ')}
         self.sys_config_list = {key: value for key, value in self.response.items() if key.startswith('sys') or key.startswith('auth')}
+
+        self.gtm_wideip_list = {key: value for key, value in self.response.items() if key.startswith('gtm wideip ')}
+        self.gtm_pool_list = {key: value for key, value in self.response.items() if key.startswith('gtm pool ')}
+        self.gtm_servers_list = {key: value for key, value in self.response.items() if key.startswith('gtm server ')}
     
     def extract_config(self):
 
@@ -436,6 +466,9 @@ class BigIPConfigExporter:
         
         route_processor = RouteProcessor(self.routes_list, self.ltm_pool_list)
         self.f5_route_info_list = route_processor.process_routes()
+
+        gtm_processor = GTMServerProcessor(self.gtm_wideip_list, self.gtm_pool_list, self.gtm_servers_list)
+        self.gtm_config_list = gtm_processor.process_wideip_list()
 
         print(f"Total Virtual Servers: {len(self.vs_config_list)}")
         
@@ -1009,6 +1042,115 @@ class RouteProcessor:
             print(f"NOT FOUND: Pool For VS")
             print(data.get('pool', ''))
 
+class GTMServerProcessor:   
+    def __init__(self, gtm_wideip_list, gtm_pool_list, gtm_servers_list):
+        self.gtm_wideip_list = gtm_wideip_list
+        self.gtm_pool_list = gtm_pool_list
+        self.gtm_servers_list = gtm_servers_list
+                
+        self.gtm_config_list = []
+
+    def process_wideip_list(self):
+        for key, data in self.gtm_wideip_list.items():
+            wideip_pools = data.get("pools")
+            if wideip_pools:
+                for pool, pool_data in wideip_pools.items():
+                    self.gtm_config = GTM_WIDEIP_CONFIG.copy()
+                    self.create_base_gtm_config(key, data, pool, pool_data)
+                    self.process_gtm_components(data)
+        
+                    self.gtm_config_list.append(self.gtm_config)
+        
+        return self.gtm_config_list
+
+    def create_base_gtm_config(self, key, data, pool, pool_data):
+        self.gtm_config['wideip_name'] = key.split('/')[-1]
+        self.gtm_config['wideip_type'] = key.split()[2]
+        self.gtm_config['wideip_status'] = "disabled" if "disabled" in data.keys() else "enabled"
+            
+        self.gtm_config['wideip_description'] = data.get('description', UNSET)
+        self.gtm_config['wideip_rules'] = list(data.get('rules', {}).keys()) if data.get('rules') else [UNSET]
+        
+        self.gtm_config['wideip_lb_mode'] = data.get('pool-lb-mode', UNSET)
+        self.gtm_config['wideip_persistence'] = data.get('persistence', UNSET)
+        self.gtm_config['wideip_ttl_persistence'] = data.get('ttl-persistence', UNSET)
+
+        self.gtm_config['wideip_pool_member_name'] = pool
+        self.gtm_config['wideip_pool_member_order'] = pool_data.get("order", 'N/A')
+        self.gtm_config['wideip_pool_member_ratio'] = pool_data.get("ratio", UNSET)
+
+        # print(self.gtm_config['wideip_name'])
+        # print(self.gtm_config['wideip_pool_member_name'])
+
+        return self.gtm_config   
+
+    def process_gtm_components(self, data):
+        # Mandatory
+        if data.get('pools'):
+            self.extract_gtm_pool(self.gtm_pool_list) # Passing Virtual Server and Pools list
+
+    def extract_gtm_pool(self, gtm_pool_list):
+        # Get Pool name from Virtual Server data, then serach in Pools list
+        gtm_pool = f"gtm pool {self.gtm_config['wideip_type']} {self.gtm_config['wideip_pool_member_name']}"
+        pool_data = gtm_pool_list.get(gtm_pool, {})
+
+        if pool_data:
+            members = pool_data.get("members")
+            
+            self.gtm_config['gtm_pool_status'] = "disable" if "disabled" in pool_data.keys() else "enable"
+            self.gtm_config['gtm_pool_lb_mode'] = pool_data.get('load-balancing-mode', UNSET)
+            self.gtm_config['gtm_pool_alternate_mode'] = pool_data.get('alternate-mode', UNSET)
+            self.gtm_config['gtm_pool_fallback_mode'] = pool_data.get('fallback-mode', UNSET)
+
+            self.gtm_config['gtm_pool_member_vs_name'] = []
+            self.gtm_config['pool_member_server_name'] = []
+            self.gtm_config['pool_member_datacenter'] = []
+            self.gtm_config['pool_member_server_type'] = []
+            self.gtm_config['pool_member_server_monitor_mode'] = []
+            self.gtm_config['gtm_pool_member_ip_dest'] = []
+            self.gtm_config['gtm_pool_member_ip_dest_port'] = []
+            self.gtm_config['gtm_pool_member_order'] = []
+            
+            if members:
+                for member_key, member_info in members.items():
+                    server_name, vs_name = member_key.split(":", 1)
+
+                    if '"' in server_name:
+                        if " " in server_name:
+                            server_name += '"'
+                        else:
+                            server_name = server_name.replace('"', '')
+                        vs_name = '"' + vs_name
+                    
+                    gtm_server = f"gtm server {server_name}"
+                    gtm_server = self.gtm_servers_list[gtm_server]
+                    gtm_server_vs_ip = gtm_server['virtual-servers'][vs_name]["destination"]
+                    gtm_server_vs_ip_port = re.search(r'(\:\S+)', gtm_server_vs_ip).group(0)
+
+                    monitor = gtm_server.get('monitor', None)
+                    monitor_min = gtm_server.get('monitor min 1 of', None)
+                    if monitor:
+                        self.gtm_config['pool_member_server_monitor_mode'].append(monitor)
+                    elif monitor_min:
+                        self.gtm_config['pool_member_server_monitor_mode'].append(f"min 1 of {monitor_min[0]}")
+                
+                    self.gtm_config['gtm_pool_member_vs_name'].append(vs_name)
+                    self.gtm_config['pool_member_server_name'].append(server_name)
+                    self.gtm_config['pool_member_datacenter'].append(gtm_server['datacenter'])
+                    self.gtm_config['pool_member_server_type'].append(gtm_server['product'])
+
+                    self.gtm_config['gtm_pool_member_ip_dest'].append(gtm_server_vs_ip)
+                    self.gtm_config['gtm_pool_member_ip_dest_port'].append(gtm_server_vs_ip_port)
+                    self.gtm_config['gtm_pool_member_order'].append(member_info.get('member-order', "N/A"))
+            else:
+                self.gtm_config['gtm_pool_member_vs_name'] = [UNSET]
+                self.gtm_config['pool_member_server_name'] = [UNSET]
+                self.gtm_config['pool_member_datacenter'] = [UNSET]
+                self.gtm_config['pool_member_server_type'] = [UNSET]
+                self.gtm_config['pool_member_server_monitor_mode'] = [UNSET]
+                self.gtm_config['gtm_pool_member_ip_dest'] = [UNSET]
+                self.gtm_config['gtm_pool_member_ip_dest_port'] = [UNSET]
+                self.gtm_config['gtm_pool_member_order'] = [UNSET]
 
 if __name__ == "__main__":    
     os.makedirs(CONFIG_OUTPUT_FOLDER, exist_ok=True)
